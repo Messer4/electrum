@@ -35,6 +35,7 @@ from .mnemonic import Mnemonic, load_wordlist
 from .plugins import run_hook
 from .util import PrintError, InvalidPassword, hfu
 
+MASK_SIZE = 4
 
 class KeyStore(PrintError):
 
@@ -264,12 +265,20 @@ class Xpub:
     def derive_pubkey(self, for_change, n):
         xpub = self.xpub_change if for_change else self.xpub_receive
         if xpub is None:
-            xpub = bip32_public_derivation(self.xpub, "", "/%d"%for_change)
             if for_change:
+                xpub = bip32_public_derivation(self.xpub, "", "/%d" % for_change)
                 self.xpub_change = xpub
             else:
+                # JH FIX: do not build derivation for receive address
+                xpub = self.xpub
                 self.xpub_receive = xpub
-        return self.get_pubkey_from_xpub(xpub, (n,))
+
+        # Fix to allow depth
+        if type(n) != tuple:
+            assert type(n) == int
+            n = (n,)
+
+        return self.get_pubkey_from_xpub(xpub, n)
 
     @classmethod
     def get_pubkey_from_xpub(self, xpub, sequence):
@@ -278,8 +287,17 @@ class Xpub:
             cK, c = CKD_pub(cK, c, i)
         return bh2u(cK)
 
-    def get_xpubkey(self, c, i):
-        s = ''.join(map(lambda x: bitcoin.int_to_hex(x,2), (c, i)))
+    # Hacked for Jackhammer: not to build payment addresses from HD xpub
+    def get_xpubkey(self, for_change, i):
+        if type(i) != tuple:
+            assert type(i) == int
+            i = (i,)
+
+        if for_change:
+            s = ''.join(map(lambda x: bitcoin.int_to_hex(x, MASK_SIZE), (for_change,) + i))
+        else:
+            s = ''.join(map(lambda x: bitcoin.int_to_hex(x, MASK_SIZE), i))
+
         return 'ff' + bh2u(bitcoin.DecodeBase58Check(self.xpub)) + s
 
     @classmethod
@@ -291,8 +309,8 @@ class Xpub:
         dd = pk[78:]
         s = []
         while dd:
-            n = int(bitcoin.rev_hex(bh2u(dd[0:2])), 16)
-            dd = dd[2:]
+            n = int(bitcoin.rev_hex(bh2u(dd[0:MASK_SIZE])), 16)
+            dd = dd[MASK_SIZE:]
             s.append(n)
         assert len(s) == 2
         return xkey, s

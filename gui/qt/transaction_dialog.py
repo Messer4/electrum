@@ -42,14 +42,14 @@ from .util import *
 
 dialogs = []  # Otherwise python randomly garbage collects the dialogs...
 
-def show_transaction(tx, parent, desc=None, prompt_if_unsaved=False):
-    d = TxDialog(tx, parent, desc, prompt_if_unsaved)
+def show_transaction(tx, parent, desc=None, prompt_if_unsaved=False, cryptagio_tx_id=None, cryptagio_tx_hash=None):
+    d = TxDialog(tx, parent, desc, prompt_if_unsaved, cryptagio_tx_id, cryptagio_tx_hash)
     dialogs.append(d)
     d.show()
 
 class TxDialog(QDialog, MessageBoxMixin):
 
-    def __init__(self, tx, parent, desc, prompt_if_unsaved):
+    def __init__(self, tx, parent, desc, prompt_if_unsaved, cryptagio_tx_id, cryptagio_tx_hash):
         '''Transactions in the wallet will show their description.
         Pass desc to give a description for txs not yet in the wallet.
         '''
@@ -65,6 +65,8 @@ class TxDialog(QDialog, MessageBoxMixin):
         self.prompt_if_unsaved = prompt_if_unsaved
         self.saved = False
         self.desc = desc
+        self.cryptagio_tx_id = cryptagio_tx_id
+        self.cryptagio_tx_hash = cryptagio_tx_hash
 
         self.setMinimumWidth(750)
         self.setWindowTitle(_("Transaction"))
@@ -95,10 +97,11 @@ class TxDialog(QDialog, MessageBoxMixin):
 
         vbox.addStretch(1)
 
-        self.sign_button = b = QPushButton(_("Sign"))
+        self.sign_button = b = QPushButton(_("Sign" if self.cryptagio_tx_id is None else "Sign for Peatio"))
         b.clicked.connect(self.sign)
 
-        self.broadcast_button = b = QPushButton(_("Broadcast"))
+        self.broadcast_button = b = QPushButton(
+            _("Broadcast" if self.cryptagio_tx_id is None else "Broadcast for Peatio"))
         b.clicked.connect(self.do_broadcast)
 
         self.save_button = b = QPushButton(_("Save"))
@@ -132,14 +135,20 @@ class TxDialog(QDialog, MessageBoxMixin):
         self.main_window.push_top_level_window(self)
         try:
             self.main_window.broadcast_transaction(self.tx, self.desc)
+            if self.cryptagio_tx_hash is not None:
+                self.cryptagio_tx_hash = self.main_window.cryptagio.approve_tx(self.cryptagio_tx_id, self.tx,
+                                                                               self.cryptagio_tx_hash)
+                if self.cryptagio_tx_hash is not None:
+                    self.broadcast_button.setDisabled(True)
         finally:
             self.main_window.pop_top_level_window(self)
+
         self.saved = True
-        self.update()
+        self.update(False)
 
     def closeEvent(self, event):
         if (self.prompt_if_unsaved and not self.saved
-            and not self.question(_('This transaction is not saved. Close anyway?'), title=_("Warning"))):
+                and not self.question(_('This transaction is not saved. Close anyway?'), title=_("Warning"))):
             event.ignore()
         else:
             event.accept()
@@ -158,7 +167,13 @@ class TxDialog(QDialog, MessageBoxMixin):
             if success:
                 self.prompt_if_unsaved = True
                 self.saved = False
-            self.update()
+
+                tx_hash, fee = self.update()
+                # if not self.tx.is_complete() and self.cryptagio_tx_id is not None:
+                if self.cryptagio_tx_id is not None:
+                    self.cryptagio_tx_hash = self.main_window.cryptagio.update_tx(self.cryptagio_tx_id,
+                                                                                  tx_hash, fee, self.tx,
+                                                                                  self.cryptagio_tx_hash)
             self.main_window.pop_top_level_window(self)
 
         self.sign_button.setDisabled(True)
@@ -185,7 +200,7 @@ class TxDialog(QDialog, MessageBoxMixin):
         size = self.tx.estimated_size()
         self.broadcast_button.setEnabled(can_broadcast)
         can_sign = not self.tx.is_complete() and \
-            (self.wallet.can_sign(self.tx) or bool(self.main_window.tx_external_keypairs))
+                (self.wallet.can_sign(self.tx) or bool(self.main_window.tx_external_keypairs))
         self.sign_button.setEnabled(can_sign)
         self.tx_hash_e.setText(tx_hash or _('Unknown'))
         if desc is None:

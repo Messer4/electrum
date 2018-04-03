@@ -61,7 +61,7 @@ try:
 except:
     plot_history = None
 import electroncash.web as web
-
+from electroncash.cryptagio import Cryptagio
 from .amountedit import AmountEdit, BTCAmountEdit, MyLineEdit, BTCkBEdit
 from .qrcodewidget import QRCodeWidget, QRDialog
 from .qrtextedit import ShowQRTextEdit, ScanQRTextEdit
@@ -193,7 +193,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.payment_request_error_signal.connect(self.payment_request_error)
         self.notify_transactions_signal.connect(self.notify_transactions)
         self.history_list.setFocus(True)
-
+        self.cryptagio = Cryptagio(self)
         # network callbacks
         if self.network:
             self.network_signal.connect(self.on_network_qt)
@@ -770,9 +770,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         d = address_dialog.AddressDialog(self, addr)
         d.exec_()
 
-    def show_transaction(self, tx, tx_desc = None):
+    def show_transaction(self, tx, tx_desc=None, cryptagio_tx_id=None, cryptagio_tx_hash=None):
         '''tx_desc is set only for txs created in the Send tab'''
-        show_transaction(tx, self, tx_desc)
+        show_transaction(tx, self, tx_desc, cryptagio_tx_id=cryptagio_tx_id, cryptagio_tx_hash=cryptagio_tx_hash)
 
     def create_receive_tab(self):
         # A 4-column grid layout.  All the stretch is in the last column.
@@ -1116,11 +1116,13 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.preview_button.setToolTip(_('Display the details of your transactions before signing it.'))
         self.send_button = EnterButton(_("Send"), self.do_send)
         self.clear_button = EnterButton(_("Clear"), self.do_clear)
+        self.cryptagio_button = EnterButton(_("Cryptagio Withdraw"), self.do_cryptagio)
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         buttons.addWidget(self.clear_button)
         buttons.addWidget(self.preview_button)
         buttons.addWidget(self.send_button)
+        buttons.addWidget(self.cryptagio_button)
         grid.addLayout(buttons, 6, 1, 1, 3)
 
         self.amount_e.shortcut.connect(self.spend_max)
@@ -1331,6 +1333,81 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
     def do_preview(self):
         self.do_send(preview = True)
 
+    def do_cryptagio(self):
+        if run_hook('abort_send', self):
+            return
+        tx_hash, fee, tx_body = self.cryptagio.check_for_uncorfimed_tx()
+
+        tx_desc = self.message_e.text()
+
+        if not tx_hash is None or not fee is None or not tx_body is None:
+            from electroncash.transaction import SerializationError
+            try:
+                tx = self.tx_from_text(tx_body)
+                if tx:
+                    self.show_transaction(tx, tx_desc, self.cryptagio.tx_id, self.cryptagio.tx_body_hash)
+            except SerializationError as e:
+                self.show_critical(_("Electrum was unable to deserialize the transaction:") + "\n" + str(e))
+            return
+        else:
+            outputs = self.cryptagio.get_outputs()
+            tx_desc = self.message_e.text()
+
+            if self.payto_e.is_alias and self.payto_e.validated is False:
+                alias = self.payto_e.toPlainText()
+                msg = _(
+                    'WARNING: the alias "%s" could not be validated via an additional security check, DNSSEC, and thus may not be correct.' % alias) + '\n'
+                msg += _('Do you wish to continue?')
+                if not self.question(msg):
+                    return
+            if not outputs or type(outputs) != list:
+                #nothing to do here
+                return
+
+            for _type, addr, amount in outputs:
+                if addr is None:
+                    self.show_error(_('Bitcoin Address is None'))
+                    return
+                if _type == TYPE_ADDRESS and not bitcoin.is_address(addr):
+                    self.show_error(_('Invalid Bitcoin Address'))
+                    return
+                if amount is None:
+                    self.show_error(_('Invalid Amount'))
+                    return
+
+            fee_estimator = self.get_send_fee_estimator()
+            coins = self.get_coins()
+
+            max_fee_satoshi = int(self.cryptagio.max_fee_amount * pow(10, 8))
+            while (not fee) or (fee > max_fee_satoshi):
+                is_sweep = bool(self.tx_external_keypairs)
+                # fee_estimator = None
+                if fee and fee > max_fee_satoshi:
+                    fee_estimator = max_fee_satoshi
+                try:
+                    tx = self.wallet.make_unsigned_transaction(
+                        coins, outputs, self.config, fixed_fee=fee_estimator, is_sweep=is_sweep)
+                except NotEnoughFunds:
+                    self.show_message(_("Insufficient funds"))
+                    return
+                except BaseException as e:
+                    traceback.print_exc(file=sys.stdout)
+                    self.show_message(str(e))
+                    return
+                fee = tx.get_fee()
+
+            amount = tx.output_value() if self.is_max else sum(map(lambda x: x[2], outputs))
+
+            use_rbf = self.config.get('use_rbf', True)
+            if use_rbf:
+                tx.set_rbf(True)
+
+            if fee < self.wallet.relayfee() * tx.estimated_size() / 1000 :
+                self.show_error(_("This transaction requires a higher fee, or it will not be propagated by the network"))
+                return
+
+            self.show_transaction(tx, tx_desc, self.cryptagio.tx_id, self.cryptagio.tx_body_hash) #tx_hash
+
     def do_send(self, preview = False):
         if run_hook('abort_send', self):
             return
@@ -1354,9 +1431,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         amount = tx.output_value() if self.is_max else sum(map(lambda x:x[2], outputs))
         fee = tx.get_fee()
 
-        #if fee < self.wallet.relayfee() * tx.estimated_size() / 1000 and tx.requires_fee(self.wallet):
-            #self.show_error(_("This transaction requires a higher fee, or it will not be propagated by the network"))
-            #return
+        if fee < self.wallet.relayfee() * tx.estimated_size() / 1000 and tx.requires_fee(self.wallet):
+            self.show_error(_("This transaction requires a higher fee, or it will not be propagated by the network"))
+            return
 
         if preview:
             self.show_transaction(tx, tx_desc)
@@ -1647,7 +1724,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         from .address_list import AddressList
         self.address_list = l = AddressList(self)
         self.cashaddr_toggled_signal.connect(l.update)
-        return self.create_list_tab(l)
+        return self.create_list_tab(l,l.get_list_header())
 
     def create_utxo_tab(self):
         from .utxo_list import UTXOList
@@ -2560,6 +2637,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         fee_widgets = []
         tx_widgets = []
         id_widgets = []
+        cryptagio_widgets = []
 
         cashaddr_cb = QCheckBox(_('CashAddr address format'))
         cashaddr_cb.setChecked(Address.FMT_UI == Address.FMT_CASHADDR)
@@ -2865,6 +2943,51 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         fiat_widgets.append((QLabel(_('Show history rates')), hist_checkbox))
         fiat_widgets.append((QLabel(_('Show Fiat balance for addresses')), fiat_address_checkbox))
         fiat_widgets.append((QLabel(_('Source')), ex_combo))
+        # Jackhammer
+        jh_host_label = HelpLabel(_('JH Host') + ':', _('Address of JH including port.'))
+        jh_host_e = QLineEdit(self.config.get('jh_host', ''))
+        jh_host_e.setFixedWidth(300)
+
+        def on_jh_host_edit():
+            self.config.set_key('jh_host', str(jh_host_e.text()), True)
+
+        jh_host_e.editingFinished.connect(on_jh_host_edit)
+        cryptagio_widgets.append((jh_host_label, jh_host_e))
+
+        jh_key_label = HelpLabel(_('JH Api Key') + ':', _('Key for JH API.'))
+        jh_key_e = QLineEdit(self.config.get('jh_key', ''))
+
+        def on_jh_key_edit():
+            self.config.set_key('jh_key', str(jh_key_e.text()), True)
+
+        jh_key_e.editingFinished.connect(on_jh_key_edit)
+        cryptagio_widgets.append((jh_key_label, jh_key_e))
+
+        # jh_secret_label = HelpLabel(_('JH Api Secret') + ':', _('Secret for JH API..'))
+        # jh_secret_e = QLineEdit(self.config.get('jh_secret',''))
+        # def on_jh_secret_edit():
+        #     self.config.set_key('jh_secret', str(jh_secret_e.text()), True)
+        # jh_secret_e.editingFinished.connect(on_jh_secret_edit)
+        # cryptagio_widgets.append((jh_secret_label, jh_secret_e))
+
+        # Cryptagio
+        cryptagio_host_label = HelpLabel(_('Cryptagio Host') + ':', _('Address of  port.'))
+        cryptagio_host_e = QLineEdit(self.config.get('cryptagio_host', ''))
+
+        def on_cryptagio_host_edit():
+            self.config.set_key('cryptagio_host', str(cryptagio_host_e.text()), True)
+
+        cryptagio_host_e.editingFinished.connect(on_cryptagio_host_edit)
+        cryptagio_widgets.append((cryptagio_host_label, cryptagio_host_e))
+
+        cryptagio_key_label = HelpLabel(_('Cryptagio Api Key') + ':', _('Key for Cryptagio Withdrawal.'))
+        cryptagio_key_e = QLineEdit(self.config.get('cryptagio_key', ''))
+
+        def on_cryptagio_key_edit():
+            self.config.set_key('cryptagio_key', str(cryptagio_key_e.text()), True)
+
+        cryptagio_key_e.editingFinished.connect(on_cryptagio_key_edit)
+        cryptagio_widgets.append((cryptagio_key_label, cryptagio_key_e))
 
         tabs_info = [
             (fee_widgets, _('Fees')),
@@ -2872,12 +2995,13 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
             (gui_widgets, _('Appearance')),
             (fiat_widgets, _('Fiat')),
             (id_widgets, _('Identity')),
+            (cryptagio_widgets, _('Cryptagio')),
         ]
         for widgets, name in tabs_info:
             tab = QWidget()
             grid = QGridLayout(tab)
-            grid.setColumnStretch(0,1)
-            for a,b in widgets:
+            grid.setColumnStretch(0, 1)
+            for a, b in widgets:
                 i = grid.rowCount()
                 if b:
                     if a:
@@ -2902,7 +3026,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
 
         run_hook('close_settings_dialog')
         if self.need_restart:
-            self.show_warning(_('Please restart Electron Cash to activate the new GUI settings'), title=_('Success'))
+            self.show_warning(_('Please restart Electrum to activate the new GUI settings'), title=_('Success'))
 
 
     def closeEvent(self, event):

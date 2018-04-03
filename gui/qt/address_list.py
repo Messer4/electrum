@@ -27,7 +27,8 @@ import webbrowser
 
 from functools import partial
 
-from .util import MyTreeWidget, MONOSPACE_FONT, SortableTreeWidgetItem
+from .util import *
+import requests
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QColor, QKeySequence
 from PyQt5.QtWidgets import QTreeWidgetItem, QAbstractItemView, QMenu
@@ -41,17 +42,95 @@ class AddressList(MyTreeWidget):
     filter_columns = [0, 1, 2]  # Address, Label, Balance
 
     def __init__(self, parent=None):
-        super().__init__(parent, self.create_menu, [], 2)
+        MyTreeWidget.__init__(self, parent, self.create_menu, [], 1)
         self.refresh_headers()
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.setSortingEnabled(True)
+        self.show_change = False
+        self.show_used = 0
+        self.jh_is_loading = False
+        # self.change_button = QComboBox(self)
+        # self.change_button.currentIndexChanged.connect(self.toggle_change)
+        # for t in [_('Receiving'), _('Change')]:
+        #     self.change_button.addItem(t)
+
+    def toggle_change(self, show):
+        show = bool(show)
+        if show == self.show_change:
+            return
+        self.show_change = show
+        self.update()
 
     def refresh_headers(self):
-        headers = [ ('Address'), _('Index'),_('Label'), _('Balance'), _('Tx')]
+        headers = [_('Address'), _('Label'), _('Balance')]
         fx = self.parent.fx
         if fx and fx.get_fiat_address_config():
-            headers.insert(4, '{} {}'.format(fx.get_currency(), _(' Balance')))
+            headers.extend([_(fx.get_currency() + ' Balance')])
+        headers.extend([_('Tx')])
         self.update_headers(headers)
+
+    def get_list_header(self):
+        refresh_button = EnterButton(_("JH Refresh"), self.do_refresh)
+        refresh_button.setToolTip(_('Refresh HD wallet balances.'))
+
+        return QLabel(_("Filter:")), refresh_button
+
+    def do_refresh(self):
+        if self.jh_is_loading:
+            self.parent.show_error(_('Synchronization in process. Please wait'))
+            return
+
+        self.jh_is_loading = True
+        self.update()
+
+        def a():
+            currency = "BCH"
+            jh_host = self.config.get('jh_host', '').rstrip('/')
+            jh_key = self.config.get('jh_key', '')
+
+            headers = {
+                'x-api-key': jh_key
+            }
+
+            lastId = 0
+            while True:
+                api_route = jh_host + "/export/address/" + currency + "?last_id=" + str(lastId)
+                if jh_host == '' or jh_key == '':
+                    return self.parent.show_error(_('Check your Jackhammer preferences'))
+
+                r = requests.get(api_route, headers=headers)
+                if r.status_code is not requests.codes.ok:
+                    return self.parent.show_error(_('Bad response from Jackhammer. Code: ') + ("%s" % r.status_code) + r.text)
+
+                response = r.json()
+                if response is None or not len(response):
+                    return
+
+                for addr in response:
+                    path = addr.get('hd_key', '')
+                    address = addr.get('address', '')
+
+                    if path == '':
+                        return self.parent.show_error(_('Bad response from Jackhammer'))
+
+                    hd_address = self.wallet.create_new_hd_address(path, False)
+                    hd_address_text = hd_address.to_ui_string()
+                    BTC_ADDR = Address.from_string(address)
+                    if BTC_ADDR != hd_address :
+                        return self.parent.show_error(_('Wrong address was generated. Check if your masterxpub matches'))
+                    #
+                    self.wallet.create_new_hd_address(path, True)
+                    lastId = addr.get('id', 0)
+                    if lastId == 0:
+                        return
+
+        try:
+            a()
+        except Exception as e:
+            print(e)
+            self.parent.show_error(_('Exception during request '))
+
+        self.jh_is_loading = False
+        self.update()
 
     def on_update(self):
         self.wallet = self.parent.wallet
@@ -159,7 +238,7 @@ class AddressList(MyTreeWidget):
             if addr_URL:
                 menu.addAction(_("View on block explorer"), lambda: webbrowser.open(addr_URL))
 
-        freeze = self.parent.set_frozen_state
+        freeze = self.wallet.set_frozen_state
         if any(self.wallet.is_frozen(addr) for addr in addrs):
             menu.addAction(_("Unfreeze"), partial(freeze, addrs, False))
         if not all(self.wallet.is_frozen(addr) for addr in addrs):
