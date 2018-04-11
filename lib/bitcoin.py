@@ -907,5 +907,9 @@ def bip32_public_derivation(xpub, branch, sequence):
 
 def bip32_private_key(sequence, k, chain):
     for i in sequence:
-        k, chain = CKD_priv(k, chain, i)
+        if type(i)==tuple:
+            for t in i:
+                k, chain = CKD_priv(k, chain, t)
+        else:
+             k, chain = CKD_priv(k, chain, i)
     return k

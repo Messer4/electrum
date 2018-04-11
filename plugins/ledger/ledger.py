@@ -283,11 +283,14 @@ class Ledger_KeyStore(Hardware_KeyStore):
                 if x_pubkey in derivations:
                     signingPos = i
                     s = derivations.get(x_pubkey)
-                    hwAddress = "%s/%d/%d" % (self.get_derivation()[2:], s[0], s[1])
+                    # hwAddress = "%s/%d/%d" % (self.get_derivation()[2:], s[0], s[1])
+                    hwAddress = "%s" % (self.get_derivation()[2:])
+
+                    # Jackhammer Fix
                     for idx in s:
                         hwAddress += "/%d" % (idx)
-                    #     TODO CHECK FIX
-                    break
+
+                break
             else:
                 self.give_error("No matching x_key for sign_transaction") # should never happen
 

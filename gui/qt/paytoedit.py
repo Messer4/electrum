@@ -159,7 +159,6 @@ class PayToEdit(ScanQRTextEdit):
                 amount = self.amount_edit.get_amount()
 
             _type, addr = self.payto_address
-            print(amount)
             self.outputs = [(_type, addr, amount)]
 
         return self.outputs[:]

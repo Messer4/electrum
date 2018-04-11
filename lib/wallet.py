@@ -39,7 +39,6 @@ from collections import defaultdict
 from decimal import Decimal
 from functools import partial
 
-
 from .i18n import _
 from .util import NotEnoughFunds, ExcessiveFee, PrintError, UserCancelled, profiler, format_satoshis
 
@@ -64,7 +63,6 @@ from .paymentrequest import InvoiceStore
 from .contacts import Contacts
 
 TX_STATUS = [
-    _('Replaceable'),
     _('Unconfirmed parent'),
     _('Low fee'),
     _('Unconfirmed'),
@@ -168,17 +166,17 @@ class Abstract_Wallet(PrintError):
         self.synchronizer = None
         self.verifier = None
 
-        self.gap_limit_for_change = 6 # constant
+        self.gap_limit_for_change = 3 # constant
         # saved fields
         self.use_change            = storage.get('use_change', True)
         self.multiple_change       = storage.get('multiple_change', False)
         self.labels                = storage.get('labels', {})
-        self.hd_paths = storage.get('hd_paths', {})
         # Frozen addresses
         frozen_addresses = storage.get('frozen_addresses',[])
         self.frozen_addresses = set(Address.from_string(addr)
                                     for addr in frozen_addresses)
         # address -> list(txid, height)
+        self.hd_paths = storage.get('hd_paths', {})
         history = storage.get('addr_history',{})
         self._history = self.to_Address_dict(history)
 
@@ -324,7 +322,13 @@ class Abstract_Wallet(PrintError):
         return os.path.basename(self.storage.path)
 
     def save_addresses(self):
-        self.storage.put('addresses', {'receiving': self.receiving_addresses, 'change': self.change_addresses})
+        addr_dict = {
+            'receiving': [addr.to_storage_string()
+                          for addr in self.receiving_addresses],
+            'change': [addr.to_storage_string()
+                       for addr in self.change_addresses],
+        }
+        self.storage.put('addresses', addr_dict)
 
     def load_addresses(self):
         d = self.storage.get('addresses', {})
@@ -332,6 +336,18 @@ class Abstract_Wallet(PrintError):
             d = {}
         self.receiving_addresses = Address.from_strings(d.get('receiving', []))
         self.change_addresses = Address.from_strings(d.get('change', []))
+        self.hd_paths_addresses_dict = self.storage.get('hd_paths', {})
+        hd_paths_addresses = {}
+        for rec in self.hd_paths_addresses_dict:
+            hd_paths_addresses[Address.from_string(rec)]= tuple(map(int, self.hd_paths_addresses_dict[rec].split(":")))
+        self.hd_paths_addresses = hd_paths_addresses
+
+    def load_hd_addresses(self):
+        self.hd_paths_addresses_dict = self.storage.get('hd_paths', {})
+        hd_paths_addresses = {}
+        for rec in self.hd_paths_addresses_dict:
+            hd_paths_addresses[Address.from_string(rec)] = tuple(map(int, self.hd_paths_addresses_dict[rec].split(":")))
+        self.hd_paths_addresses = hd_paths_addresses
 
     def synchronize(self):
         pass
@@ -347,29 +363,6 @@ class Abstract_Wallet(PrintError):
 
     def is_up_to_date(self):
         with self.lock: return self.up_to_date
-
-    def set_hdpath(self, name, text=None):
-        name_text = name.to_ui_string()
-        changed = False
-        old_text = self.hd_paths.get(name_text)
-        if text:
-            text = text.replace("\n", " ")
-            if old_text != text:
-                self.hd_paths[name_text] = text
-                changed = True
-        else:
-            if old_text:
-                self.hd_paths.pop(name_text)
-                changed = True
-
-        if changed:
-            run_hook('set_hdpath', self, name_text, text)
-            self.storage.put('hd_paths', self.hd_paths)
-
-        return changed
-
-    def get_hdpath(self, tx_hash):
-        return self.hd_paths.get(tx_hash, '')
 
     def set_label(self, name, text = None):
         if isinstance(name, Address):
@@ -392,6 +385,29 @@ class Abstract_Wallet(PrintError):
 
         return changed
 
+    # FUNCTIONS SIMILAR TO SET/GET LABEL, BUT TO SAVE PATH FOR HD-KEY FROM JACKHAMMER
+    def set_hdpath(self, name, text = None):
+        changed = False
+        old_text = self.hd_paths.get(name)
+        if text:
+            text = text.replace("\n", " ")
+            if old_text != text:
+                self.hd_paths[name] = text
+                changed = True
+        else:
+            if old_text:
+                self.hd_paths.pop(name)
+                changed = True
+
+        if changed:
+            run_hook('set_hdpath', self, name, text)
+            self.storage.put('hd_paths', self.hd_paths)
+
+        return changed
+
+    def get_hdpath(self, tx_hash):
+        return self.hd_paths.get(tx_hash, '')
+
     def is_mine(self, address):
         assert not isinstance(address, str)
         return address in self.get_addresses()
@@ -401,16 +417,19 @@ class Abstract_Wallet(PrintError):
         return address in self.change_addresses
 
     def get_address_index(self, address):
-        try:
-            return False, self.receiving_addresses.index(address)
-        except ValueError:
-            pass
-        try:
-            return True, self.change_addresses.index(address)
-        except ValueError:
-            pass
-        assert not isinstance(address, str)
-        raise Exception("Address {} not found".format(address))
+        btc_addr = address
+        if type(address) == str:
+            btc_addr = Address.from_string(address)
+        self.load_hd_addresses()
+        if self.hd_paths_addresses.get(btc_addr)!= None:
+            return False, self.hd_paths_addresses[btc_addr]
+        if btc_addr in self.receiving_addresses:
+            return False, self.receiving_addresses.index(btc_addr)
+        if btc_addr in self.change_addresses:
+            return True, self.change_addresses.index(btc_addr)
+
+
+        raise Exception("Address not found", address)
 
     def export_private_key(self, address, password):
         """ extended WIF format """
@@ -649,6 +668,7 @@ class Abstract_Wallet(PrintError):
 
     # return the balance of a bitcoin address: confirmed and matured, unconfirmed, unmatured
     def get_addr_balance(self, address):
+        assert isinstance(address, Address)
         received, sent = self.get_addr_io(address)
         c = u = x = 0
         for txo, (tx_height, v, is_cb) in received.items():
@@ -709,8 +729,8 @@ class Abstract_Wallet(PrintError):
         return cc, uu, xx
 
     def get_address_history(self, address):
-        with self.lock:
-            return self._history.get(address, [])
+        assert isinstance(address, Address)
+        return self._history.get(address, [])
 
     def add_transaction(self, tx_hash, tx):
         is_coinbase = tx.inputs()[0]['type'] == 'coinbase'
@@ -1443,7 +1463,7 @@ class Abstract_Wallet(PrintError):
         return False
 
     def add_address(self, address):
-        # assert isinstance(address, Address)
+        assert isinstance(address, Address)
         if address not in self._history:
             self._history[address] = []
         if self.synchronizer:
@@ -1723,7 +1743,7 @@ class Deterministic_Wallet(Abstract_Wallet):
 
     def __init__(self, storage):
         Abstract_Wallet.__init__(self, storage)
-        self.gap_limit = storage.get('gap_limit', 20)
+        self.gap_limit = storage.get('gap_limit', 10)
 
     def has_seed(self):
         return self.keystore.has_seed()
@@ -1792,7 +1812,7 @@ class Deterministic_Wallet(Abstract_Wallet):
             self.add_address(address)
             return address
 
-    def create_new_hd_address(self, path, save):
+    def create_new_hd_address(self, path,save):
         assert type(path) is str
 
         hd_path = tuple(map(int, path.split(":")))
@@ -1803,11 +1823,14 @@ class Deterministic_Wallet(Abstract_Wallet):
         address = self.pubkeys_to_address(x)
 
         hd_path = self.get_hdpath(address)
+
         if save and address not in addr_list:
+            print("create_new_address: " + address.to_ui_string())
             addr_list.append(address)
             self.save_addresses()
             self.add_address(address)
-            self.set_hdpath(address, path)
+            self.set_hdpath(address.to_ui_string(), path)
+            # TODO FIX set_hdpath
 
         return address
 
@@ -1826,16 +1849,17 @@ class Deterministic_Wallet(Abstract_Wallet):
     def synchronize(self):
         with self.lock:
             if self.is_deterministic():
-                # Jackhammer: do not create regular addresses
+                # Jackhammer
                 self.synchronize_sequence(False)
-                # self.synchronize_sequence(True)
+                self.synchronize_sequence(True)
             else:
-                if len(self.receiving_addresses) != len(self.keystore.keypairs):
+                 if len(self.receiving_addresses) != len(self.keystore.keypairs):
                     pubkeys = self.keystore.keypairs.keys()
                     self.receiving_addresses = [self.pubkeys_to_address(i) for i in pubkeys]
                     self.save_addresses()
                     for addr in self.receiving_addresses:
                         self.add_address(addr)
+
 
     def is_beyond_limit(self, address, is_change):
         if is_change:
@@ -1910,8 +1934,7 @@ class Standard_Wallet(Simple_Deterministic_Wallet):
     wallet_type = 'standard'
 
     def pubkeys_to_address(self, pubkey):
-        # return bitcoin.pubkey_to_address(self.txin_type, pubkey)
-         return Address.from_pubkey(pubkey)
+        return Address.from_pubkey(pubkey)
 
 
 class Multisig_Wallet(Deterministic_Wallet):
@@ -1940,7 +1963,7 @@ class Multisig_Wallet(Deterministic_Wallet):
     def load_keystore(self):
         self.keystores = {}
         for i in range(self.n):
-            name = 'x%d/' % (i + 1)
+            name = 'x%d/'%(i+1)
             self.keystores[name] = load_keystore(self.storage, name)
         self.keystore = self.keystores['x1/']
         xtype = bitcoin.xpub_type(self.keystore.xpub)
@@ -1985,20 +2008,10 @@ class Multisig_Wallet(Deterministic_Wallet):
         return ''.join(sorted(self.get_master_public_keys()))
 
     def add_input_sig_info(self, txin, address):
-        for_change, derivation = self.get_address_index(address)
-
-        if not for_change:
-            # Fix for Jackhammer
-            path = self.get_hdpath(address)
-            assert path != ''
-
-            derivation = tuple(map(int, path.split(":")))
-            assert len(derivation) > 0
-
         # x_pubkeys are not sorted here because it would be too slow
         # they are sorted in transaction.get_sorted_pubkeys
-        # pubkeys is set to None to signal that x_pubkeys are unsorted
-        txin['x_pubkeys'] = [k.get_xpubkey(for_change, derivation) for k in self.get_keystores()]
+        derivation = self.get_address_index(address)
+        txin['x_pubkeys'] = [k.get_xpubkey(*derivation) for k in self.get_keystores()]
         txin['pubkeys'] = None
         # we need n place holders
         txin['signatures'] = [None] * self.n

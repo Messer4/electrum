@@ -42,16 +42,11 @@ class AddressList(MyTreeWidget):
     filter_columns = [0, 1, 2]  # Address, Label, Balance
 
     def __init__(self, parent=None):
-        MyTreeWidget.__init__(self, parent, self.create_menu, [], 1)
+        MyTreeWidget.__init__(self, parent, self.create_menu, [], 2)
         self.refresh_headers()
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.show_change = False
-        self.show_used = 0
+        self.setSortingEnabled(True)
         self.jh_is_loading = False
-        # self.change_button = QComboBox(self)
-        # self.change_button.currentIndexChanged.connect(self.toggle_change)
-        # for t in [_('Receiving'), _('Change')]:
-        #     self.change_button.addItem(t)
 
     def toggle_change(self, show):
         show = bool(show)
@@ -61,11 +56,10 @@ class AddressList(MyTreeWidget):
         self.update()
 
     def refresh_headers(self):
-        headers = [_('Address'), _('Label'), _('Balance')]
+        headers = [ ('Address'), _('Index'),_('Label'), _('Balance'), _('Tx')]
         fx = self.parent.fx
         if fx and fx.get_fiat_address_config():
-            headers.extend([_(fx.get_currency() + ' Balance')])
-        headers.extend([_('Tx')])
+            headers.insert(4, '{} {}'.format(fx.get_currency(), _(' Balance')))
         self.update_headers(headers)
 
     def get_list_header(self):
@@ -139,6 +133,10 @@ class AddressList(MyTreeWidget):
         self.clear()
         receiving_addresses = self.wallet.get_receiving_addresses()
         change_addresses = self.wallet.get_change_addresses()
+        if self.jh_is_loading:
+            address_item = QTreeWidgetItem(["Loading addresses from Jackhammer", "", "", ""])
+            self.addChild(address_item)
+            return
 
         if self.parent.fx and self.parent.fx.get_fiat_address_config():
             fx = self.parent.fx
@@ -238,7 +236,7 @@ class AddressList(MyTreeWidget):
             if addr_URL:
                 menu.addAction(_("View on block explorer"), lambda: webbrowser.open(addr_URL))
 
-        freeze = self.wallet.set_frozen_state
+        freeze = self.parent.set_frozen_state
         if any(self.wallet.is_frozen(addr) for addr in addrs):
             menu.addAction(_("Unfreeze"), partial(freeze, addrs, False))
         if not all(self.wallet.is_frozen(addr) for addr in addrs):
