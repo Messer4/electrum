@@ -83,6 +83,24 @@ class NetworkConstants:
         # Bitcoin Cash fork block specification
         cls.BITCOIN_CASH_FORK_BLOCK_HEIGHT = 1155876
         cls.BITCOIN_CASH_FORK_BLOCK_HASH = "00000000000e38fef93ed9582a7df43815d5c2ba9fd37ef70c9a0ea4a285b8f5"
+    @classmethod
+    def set_regtest(cls):
+        cls.REGTEST = True
+        cls.WIF_PREFIX = 0xef
+        cls.ADDRTYPE_P2PKH = 111
+        cls.ADDRTYPE_P2PKH_BITPAY = 111  # Unsure
+        cls.ADDRTYPE_P2SH = 196
+        cls.ADDRTYPE_P2SH_BITPAY = 196  # Unsure
+        cls.CASHADDR_PREFIX = "bchreg"
+        cls.HEADERS_URL = "http://bitcoincash.com/files/regtest_headers"
+        cls.GENESIS = "000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943"
+        cls.DEFAULT_PORTS = {'t':'22000', 's':'22002'}
+        cls.DEFAULT_SERVERS = read_json_dict('servers_regtest.json')
+        # TODO CHANGE FOR LOCAL REGTEST
+        cls.TITLE = 'Electron Cash Regtest'
 
+        # # Bitcoin Cash fork block specification
+        # cls.BITCOIN_CASH_FORK_BLOCK_HEIGHT = 1155876
+        # cls.BITCOIN_CASH_FORK_BLOCK_HASH = "00000000000e38fef93ed9582a7df43815d5c2ba9fd37ef70c9a0ea4a285b8f5"
 
 NetworkConstants.set_mainnet()

@@ -13,7 +13,11 @@ Terminal=false
 Type=Application
 MimeType=x-scheme-handler/bitcoincash;
 Actions=Testnet;
+Actions=Regtest;
 
 [Desktop Action Testnet]
 Exec=electron-cash --testnet %u
 Name=Testnet mode
+[Desktop Action Regtest]
+Exec=electron-cash --regtest %u
+Name=Regtest mode

@@ -290,7 +290,7 @@ class Ledger_KeyStore(Hardware_KeyStore):
                     for idx in s:
                         hwAddress += "/%d" % (idx)
 
-                break
+                    break
             else:
                 self.give_error("No matching x_key for sign_transaction") # should never happen
 

@@ -48,9 +48,21 @@ testnet_block_explorers = {
                        {'tx': 'tx', 'addr': 'address'}),
 }
 
+regtest_block_explorers = {
+   # TODO ADD EXPLORER
+    'Blocktrail.com': ('https://www.blocktrail.com/tBCC',
+                       Address.FMT_LEGACY,
+                       {'tx': 'tx', 'addr': 'address'}),
+    'system default': ('blockchain:',
+                       Address.FMT_LEGACY,
+                       {'tx': 'tx', 'addr': 'address'}),
+}
+
 def BE_info():
     if NetworkConstants.TESTNET:
         return testnet_block_explorers
+    if NetworkConstants.REGTEST:
+        return regtest_block_explorers
     return mainnet_block_explorers
 
 def BE_tuple(config):

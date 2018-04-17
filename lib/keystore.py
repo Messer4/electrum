@@ -754,7 +754,12 @@ is_bip32_key = lambda x: is_xprv(x) or is_xpub(x)
 
 def bip44_derivation(account_id):
     bip  = 44
-    coin = 1 if NetworkConstants.TESTNET else 0
+    coin = 0
+    if NetworkConstants.TESTNET:
+        coin=1
+    if NetworkConstants.REGTEST:
+        coin=1
+    #     TODO COIN REGTEST
     return "m/%d'/%d'/%d'" % (bip, coin, int(account_id))
 
 def bip44_derivation_145(account_id):

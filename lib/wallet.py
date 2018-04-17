@@ -1929,7 +1929,6 @@ class Simple_Deterministic_Wallet(Simple_Wallet, Deterministic_Wallet):
 
 
 
-
 class Standard_Wallet(Simple_Deterministic_Wallet):
     wallet_type = 'standard'
 

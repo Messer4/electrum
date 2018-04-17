@@ -104,3 +104,19 @@ class BTCAmountEdit(AmountEdit):
 class BTCkBEdit(BTCAmountEdit):
     def _base_unit(self):
         return BTCAmountEdit._base_unit(self) + '/kB'
+
+
+class FeerateEdit(BTCAmountEdit):
+    def _base_unit(self):
+        p = self.decimal_point()
+        if p == 2:
+            return 'mBTC/kB'
+        if p == 0:
+            return 'sat/byte'
+        raise Exception('Unknown base unit')
+
+    def get_amount(self):
+        sat_per_byte_amount = BTCAmountEdit.get_amount(self)
+        if sat_per_byte_amount is None:
+            return None
+        return 1000 * sat_per_byte_amount

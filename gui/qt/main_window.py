@@ -63,7 +63,7 @@ except:
     plot_history = None
 import electroncash.web as web
 
-from .amountedit import AmountEdit, BTCAmountEdit, MyLineEdit, BTCkBEdit
+from .amountedit import *
 from .qrcodewidget import QRCodeWidget, QRDialog
 from .qrtextedit import ShowQRTextEdit, ScanQRTextEdit
 from .transaction_dialog import show_transaction
@@ -132,6 +132,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         self.tx_notifications = []
         self.tl_windows = []
         self.tx_external_keypairs = {}
+
 
         Address.show_cashaddr(config.get('show_cashaddr', False))
 
@@ -243,6 +244,20 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         # History tab needs updating if it used spot
         if self.fx.history_used_spot:
             self.history_list.update()
+
+    def on_fee_or_feerate(edit_changed, editing_finished):
+        edit_other = self.feerate_e if edit_changed == self.fee_e else self.fee_e
+        if editing_finished:
+            if not edit_changed.get_amount():
+                # This is so that when the user blanks the fee and moves on,
+                # we go back to auto-calculate mode and put a fee back.
+                edit_changed.setModified(False)
+        else:
+            # edit_changed was edited just now, so make sure we will
+            # freeze the correct fee setting (this)
+            edit_other.setModified(False)
+        self.fee_slider.deactivate()
+        self.update_fee()
 
     def toggle_tab(self, tab):
         show = not self.config.get('show_{}_tab'.format(tab.tab_name), False)
@@ -772,9 +787,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         d = address_dialog.AddressDialog(self, addr)
         d.exec_()
 
-    def show_transaction(self, tx, tx_desc = None, cryptagio_tx_hash=None):
+    def show_transaction(self, tx, tx_desc = None, cryptagio_tx_id=None, cryptagio_tx_hash=None):
+        tx.locktime = 1
         '''tx_desc is set only for txs created in the Send tab'''
-        show_transaction(tx, self, tx_desc, cryptagio_tx_hash=cryptagio_tx_hash)
+        show_transaction(tx, self, tx_desc, cryptagio_tx_id=cryptagio_tx_id, cryptagio_tx_hash=cryptagio_tx_hash)
 
     def create_receive_tab(self):
         # A 4-column grid layout.  All the stretch is in the last column.
@@ -1336,64 +1352,105 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
     def do_preview(self):
         self.do_send(preview = True)
 
+    def is_send_feerate_frozen(self):
+        return self.feerate_e.isVisible() and self.feerate_e.isModified() \
+               and (self.feerate_e.text() or self.feerate_e.hasFocus())
+
+    def is_send_fee_frozen(self):
+        return self.fee_e.isVisible() and self.fee_e.isModified() \
+               and (self.fee_e.text() or self.fee_e.hasFocus())
+
+    def get_send_fee_estimator(self):
+        if self.is_send_fee_frozen():
+            fee_estimator = self.fee_e.get_amount()
+        elif self.is_send_feerate_frozen():
+            amount = self.feerate_e.get_amount()
+            amount = 0 if amount is None else amount
+            fee_estimator = partial(
+                simple_config.SimpleConfig.estimate_fee_for_feerate, amount)
+        else:
+            fee_estimator = None
+        return fee_estimator
+
     def do_cryptagio(self):
         if run_hook('abort_send', self):
             return
+        tx_hash, fee, tx_body = self.cryptagio.check_for_uncorfimed_tx()
 
-        tx_hash, outputs = self.cryptagio.get_outputs()
         tx_desc = self.message_e.text()
 
-        if self.payto_e.is_alias and self.payto_e.validated is False:
-            alias = self.payto_e.toPlainText()
-            msg = _(
-                'WARNING: the alias "%s" could not be validated via an additional security check, DNSSEC, and thus may not be correct.' % alias) + '\n'
-            msg += _('Do you wish to continue?')
-            if not self.question(msg):
+        if not tx_hash is None or not fee is None or not tx_body is None:
+            from electroncash.transaction import SerializationError
+            try:
+                tx = self.tx_from_text(tx_body)
+                if tx:
+                    self.show_transaction(tx, tx_desc, self.cryptagio.tx_id, self.cryptagio.tx_body_hash)
+            except SerializationError as e:
+                self.show_critical(_("Electrum was unable to deserialize the transaction:") + "\n" + str(e))
+            return
+        else:
+            outputs = self.cryptagio.get_outputs()
+            tx_desc = self.message_e.text()
+
+            if self.payto_e.is_alias and self.payto_e.validated is False:
+                alias = self.payto_e.toPlainText()
+                msg = _(
+                    'WARNING: the alias "%s" could not be validated via an additional security check, DNSSEC, and thus may not be correct.' % alias) + '\n'
+                msg += _('Do you wish to continue?')
+                if not self.question(msg):
+                    return
+            if not outputs or type(outputs) != list:
+                #nothing to do here
                 return
 
-        if not outputs:
-            self.show_error(_('No outputs'))
-            return
+            for _type, addr, amount in outputs:
+                if addr is None:
+                    self.show_error(_('Bitcoin Address is None'))
+                    return
+                # if _type == TYPE_ADDRESS and not bitcoin.is_address(addr):
+                #     self.show_error(_('Invalid Bitcoin Address'))
+                #     return
+                # TODO HOW TO CHECK ADDRESS
+                if amount is None:
+                    self.show_error(_('Invalid Amount'))
+                    return
 
-        for _type, addr, amount in outputs:
-            if addr is None:
-                self.show_error(_('Bitcoin Address is None'))
-                return
-            if _type == TYPE_ADDRESS and not bitcoin.is_address(addr):
-                self.show_error(_('Invalid Bitcoin Address'))
-                return
-            if amount is None:
-                self.show_error(_('Invalid Amount'))
-                return
 
-        fee_estimator = self.get_send_fee_estimator()
-        coins = self.get_coins()
 
-        try:
-            is_sweep = bool(self.tx_external_keypairs)
-            tx = self.wallet.make_unsigned_transaction(
-                coins, outputs, self.config, fixed_fee=fee_estimator,
-                is_sweep=is_sweep)
-        except NotEnoughFunds:
-            self.show_message(_("Insufficient funds"))
-            return
-        except BaseException as e:
-            traceback.print_exc(file=sys.stdout)
-            self.show_message(str(e))
-            return
+            # TODO FIND SIZE
+            coins = self.get_coins()
 
-        amount = tx.output_value() if self.is_max else sum(map(lambda x: x[2], outputs))
-        fee = tx.get_fee()
+            max_fee_satoshi = int(self.cryptagio.max_fee_amount * pow(10, 8))
+            fee_estimator = max_fee_satoshi
+            while (not fee) or (fee > max_fee_satoshi):
+                is_sweep = bool(self.tx_external_keypairs)
+                # fee_estimator = None
+                if fee and fee > max_fee_satoshi:
+                    fee_estimator = max_fee_satoshi
+                try:
+                    tx = self.wallet.make_unsigned_transaction(
+                        coins, outputs, self.config)
+                #     TODO ADD FEE
+                except NotEnoughFunds:
+                    self.show_message(_("Insufficient funds"))
+                    return
+                except BaseException as e:
+                    traceback.print_exc(file=sys.stdout)
+                    self.show_message(str(e))
+                    return
+                fee = tx.get_fee()
 
-        use_rbf = self.config.get('use_rbf', True)
-        if use_rbf:
-            tx.set_rbf(True)
+            amount = tx.output_value() if self.is_max else sum(map(lambda x: x[2], outputs))
 
-        if fee < self.wallet.relayfee() * tx.estimated_size() / 1000:
-            self.show_error(_("This transaction requires a higher fee, or it will not be propagated by the network"))
-            return
+            # use_rbf = self.config.get('use_rbf', True)
+            # if use_rbf:
+            #     tx.set_rbf(True)
 
-        self.show_transaction(tx, tx_desc, tx_hash)
+            # if fee < self.wallet.relayfee() * tx.estimated_size() / 1000 :
+            #     self.show_error(_("This transaction requires a higher fee, or it will not be propagated by the network"))
+            #     return
+
+            self.show_transaction(tx, tx_desc, self.cryptagio.tx_id, self.cryptagio.tx_body_hash) #tx_hash
 
     def do_send(self, preview = False):
         if run_hook('abort_send', self):

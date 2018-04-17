@@ -42,14 +42,14 @@ from .util import *
 
 dialogs = []  # Otherwise python randomly garbage collects the dialogs...
 
-def show_transaction(tx, parent, desc=None, prompt_if_unsaved=False, cryptagio_tx_hash=None):
-    d = TxDialog(tx, parent, desc, prompt_if_unsaved, cryptagio_tx_hash)
+def show_transaction(tx, parent, desc=None, prompt_if_unsaved=False, cryptagio_tx_id=None, cryptagio_tx_hash=None):
+    d = TxDialog(tx, parent, desc, prompt_if_unsaved, cryptagio_tx_id, cryptagio_tx_hash)
     dialogs.append(d)
     d.show()
 
 class TxDialog(QDialog, MessageBoxMixin):
 
-    def __init__(self, tx, parent, desc, prompt_if_unsaved, cryptagio_tx_hash):
+    def __init__(self, tx, parent, desc, prompt_if_unsaved, cryptagio_tx_id, cryptagio_tx_hash):
         '''Transactions in the wallet will show their description.
         Pass desc to give a description for txs not yet in the wallet.
         '''
@@ -65,6 +65,7 @@ class TxDialog(QDialog, MessageBoxMixin):
         self.prompt_if_unsaved = prompt_if_unsaved
         self.saved = False
         self.desc = desc
+        self.cryptagio_tx_id = cryptagio_tx_id
         self.cryptagio_tx_hash = cryptagio_tx_hash
 
         self.setMinimumWidth(750)
@@ -135,7 +136,9 @@ class TxDialog(QDialog, MessageBoxMixin):
         try:
             self.main_window.broadcast_transaction(self.tx, self.desc)
             if self.cryptagio_tx_hash is not None:
-                self.main_window.cryptagio.approve_tx(self.cryptagio_tx_hash)
+                self.cryptagio_tx_hash = self.main_window.cryptagio.approve_tx(self.cryptagio_tx_id, self.tx, self.cryptagio_tx_hash)
+                if self.cryptagio_tx_hash is not None:
+                    self.broadcast_button.setDisabled(True)
         finally:
             self.main_window.pop_top_level_window(self)
         self.saved = True
@@ -163,8 +166,11 @@ class TxDialog(QDialog, MessageBoxMixin):
                 self.prompt_if_unsaved = True
                 self.saved = False
                 # if not self.tx.is_complete() and self.cryptagio_tx_hash is not None:
-                if self.cryptagio_tx_hash is not None:
-                    self.cryptagio_tx_hash = self.main_window.cryptagio.update_tx(self.tx, self.cryptagio_tx_hash)
+                tx_hash, fee = self.update()
+                if self.cryptagio_tx_id is not None:
+                    self.cryptagio_tx_hash = self.main_window.cryptagio.update_tx(self.cryptagio_tx_id,
+                                                                                  tx_hash, fee, self.tx,
+                                                                                  self.cryptagio_tx_hash)
             self.update()
             self.main_window.pop_top_level_window(self)
 
@@ -226,6 +232,7 @@ class TxDialog(QDialog, MessageBoxMixin):
         self.fee_label.setText(fee_str)
         self.size_label.setText(size_str)
         run_hook('transaction_dialog_update', self)
+        return tx_hash, fee
 
     def add_io(self, vbox):
         if self.tx.locktime > 0:

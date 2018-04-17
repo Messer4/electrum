@@ -470,6 +470,17 @@ def is_private_key(key):
     except:
         return False
 
+def is_b58_address(addr):
+    try:
+        addrtype, h = b58_address_to_hash160(addr)
+    except Exception as e:
+        return False
+    if addrtype not in [NetworkConstants.ADDRTYPE_P2PKH, NetworkConstants.ADDRTYPE_P2SH]:
+        return False
+    return addr == hash160_to_b58_address(h, addrtype)
+
+def is_address(addr):
+    return is_b58_address(addr)
 
 ########### end pywallet functions #######################
 
