@@ -788,7 +788,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, PrintError):
         d.exec_()
 
     def show_transaction(self, tx, tx_desc = None, cryptagio_tx_id=None, cryptagio_tx_hash=None):
-        tx.locktime = 1
         '''tx_desc is set only for txs created in the Send tab'''
         show_transaction(tx, self, tx_desc, cryptagio_tx_id=cryptagio_tx_id, cryptagio_tx_hash=cryptagio_tx_hash)
 
